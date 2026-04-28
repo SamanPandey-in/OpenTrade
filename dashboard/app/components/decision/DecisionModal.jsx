@@ -100,6 +100,64 @@ function ReportButton({ disruption, resolution, options, impactReport, traceId }
   );
 }
 
+function ExecutiveBriefPanel({ traceKey, disruption, options, impactReport }) {
+  const [brief, setBrief] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return sessionStorage.getItem(`exec_brief_${traceKey}`);
+    } catch {
+      return null;
+    }
+  });
+  const [loading, setLoading] = useState(() => !brief);
+
+  useEffect(() => {
+    if (!traceKey || !options?.length) return;
+    if (brief) return;
+
+    let aborted = false;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const res = await fetch('/api/generate-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disruption, options, impactReport, brief: true }),
+          signal: controller.signal,
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (aborted) return;
+        if (res.ok && payload.report) {
+          const text = payload.report.replace(/\s+/g, ' ').trim();
+          const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+          const short = sentences.slice(0, 2).join(' ').trim();
+          setBrief(short);
+          try { sessionStorage.setItem(`exec_brief_${traceKey}`, short); } catch {}
+        }
+      } catch (err) {
+        console.warn('[DecisionModal] Executive brief generation failed:', err?.message || err);
+      } finally {
+        if (!aborted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      aborted = true;
+      try { controller.abort(); } catch {}
+    };
+  }, [traceKey, brief, disruption, options, impactReport]);
+
+  if (!loading && !brief) return null;
+
+  return (
+    <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-sm text-[var(--text-primary)] max-w-2xl">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Executive Brief</div>
+      <div className="leading-relaxed">{loading ? 'Generating executive brief...' : brief}</div>
+    </div>
+  );
+}
+
 export default function DecisionModal() {
   const activeResolution = useAlertStore((s) => s.activeResolution);
   const disruptions = useAlertStore((s) => s.disruptions);
@@ -109,8 +167,6 @@ export default function DecisionModal() {
   const [isApproving, setIsApproving] = useState(false);
   const [isExecuted, setIsExecuted] = useState(false);
   const [approvedRank, setApprovedRank] = useState(null);
-  const [executiveBrief, setExecutiveBrief] = useState(null);
-  const [briefLoading, setBriefLoading] = useState(false);
   const [prediction, setPrediction] = useState(null);
   const approveRef = useRef(null);
   const modalRef = useRef(null);
@@ -168,53 +224,6 @@ export default function DecisionModal() {
 
   const traceId = activeResolution?.traceId || activeResolution?.id;
   const disruption = disruptions.find((d) => d.id === activeResolution?.disruptionId || d.traceId === activeResolution?.disruptionId);
-
-  // Generate a short executive brief when modal opens and options are present.
-  useEffect(() => {
-    if (!activeResolution || !activeResolution.options?.length) return;
-    const trace = activeResolution.traceId || activeResolution.id || 'no-trace';
-    const cacheKey = `exec_brief_${trace}`;
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached) {
-      setExecutiveBrief(cached);
-      return;
-    }
-
-    let aborted = false;
-    const controller = new AbortController();
-
-    (async () => {
-      try {
-        setBriefLoading(true);
-        const res = await fetch('/api/generate-report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ disruption, options: activeResolution.options, impactReport: activeResolution.impactReport, brief: true }),
-          signal: controller.signal,
-        });
-        const payload = await res.json().catch(() => ({}));
-        if (aborted) return;
-        if (res.ok && payload.report) {
-          // Keep it short: take first two sentences
-          const text = payload.report.replace(/\s+/g, ' ').trim();
-          const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-          const short = sentences.slice(0, 2).join(' ').trim();
-          setExecutiveBrief(short);
-          try { sessionStorage.setItem(cacheKey, short); } catch {}
-        }
-      } catch (err) {
-        // Non-fatal — leave executiveBrief null and continue
-        console.warn('[DecisionModal] Executive brief generation failed:', err?.message || err);
-      } finally {
-        if (!aborted) setBriefLoading(false);
-      }
-    })();
-
-    return () => {
-      aborted = true;
-      try { controller.abort(); } catch {}
-    };
-  }, [activeResolution, activeResolution?.options?.length, disruption]);
 
   async function handleApprove(rank) {
     if (isApproving || !traceId || approvedRank || isExecuted) return;
@@ -349,16 +358,13 @@ export default function DecisionModal() {
                 <>
                   <div className="p-8 overflow-y-auto custom-scrollbar space-y-8 bg-black/5">
                       <div className="flex flex-col md:flex-row gap-6">
-                        {/* Executive brief (auto-generated) */}
-                        {briefLoading && (
-                          <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/40 text-sm text-[var(--text-muted)]">Generating executive brief...</div>
-                        )}
-                        {executiveBrief && (
-                          <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-sm text-[var(--text-primary)] max-w-2xl">
-                            <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Executive Brief</div>
-                            <div className="leading-relaxed">{executiveBrief}</div>
-                          </div>
-                        )}
+                        <ExecutiveBriefPanel
+                          key={traceId || activeResolution?.id || 'no-trace'}
+                          traceKey={traceId || activeResolution?.id || 'no-trace'}
+                          disruption={disruption}
+                          options={activeResolution.options}
+                          impactReport={activeResolution.impactReport}
+                        />
 
                         {activeResolution.options.map((option) => (
                           <OptionCard 
