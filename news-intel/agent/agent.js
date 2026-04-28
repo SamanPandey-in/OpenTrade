@@ -26,6 +26,7 @@ const RELEVANCE_THRESHOLD = Number.isFinite(parsedRelevanceThreshold) ? parsedRe
 const MAX_ARTICLES_PER_CALL = 20;
 const MAX_ARTICLES_PER_CYCLE = 100; // cap total in-memory article array per poll cycle
 const DISRUPTION_AGENT_URL = process.env.DISRUPTION_AGENT_URL ?? 'http://localhost:3001';
+const FEATURE_AI_TRIAGE = (process.env.FEATURE_AI_TRIAGE || '0') === '1' || (process.env.FEATURE_AI_TRIAGE || '').toLowerCase() === 'true';
 
 let lastGdeltFetch = new Date(Date.now() - 30 * 60 * 1000);
 let _cycleRunning = false; // prevent overlapping cycles from doubling RAM usage
@@ -232,6 +233,32 @@ ${JSON.stringify(input, null, 2)}`, PROMPT, {
 }
 
 async function publishNewsAlert(item) {
+  // Attempt a lightweight AI triage (severity/type/corridors) if enabled.
+  if (FEATURE_AI_TRIAGE) {
+    try {
+      const flashPrompt = `You are given a single news alert. Respond with a JSON object containing only these fields: severity (integer 1-10), disruptionType (one of: PORT_STRIKE, STORM, CLOSURE, ACCIDENT, PIRACY, LABOR, LOGISTICS, OTHER), affectedCorridors (array of corridor names like "Suez", "Panama", "Malacca", "Los Angeles" or similar).\n\nNews alert:\n${JSON.stringify({ headline: item.headline, summary: item.summary || item.headline, source: item.source, url: item.url }, null, 2)}`;
+      const flashResult = await generateWithRetry(flashPrompt, PROMPT, {
+        maxRetries: 1,
+        invokeModel: (p) => generate(p),
+      });
+      const parsedFlash = Array.isArray(flashResult.parsed) ? flashResult.parsed[0] : flashResult.parsed;
+      if (parsedFlash && typeof parsedFlash === 'object') {
+        const fallback = buildNewsFallback(item);
+        const repaired = validateAndRepair(parsedFlash, NEWS_ALERT_RESULT_SCHEMA, fallback);
+        if (!repaired.errors.length) {
+          // Override only the triage fields we care about
+          if (repaired.data.severity != null) item.severity = repaired.data.severity;
+          if (repaired.data.disruptionType) item.disruptionType = repaired.data.disruptionType;
+          if (Array.isArray(repaired.data.affectedCorridors)) item.affectedCorridors = repaired.data.affectedCorridors;
+        } else {
+          console.warn(`[NewsAgent] AI triage repaired ${repaired.errors.length} fields, using original values for ${item.url}`);
+        }
+      }
+    } catch (err) {
+      console.warn('[NewsAgent] AI triage flash failed:', err?.message || err);
+    }
+  }
+
   const alert = createNewsAlert({
     sourceUrl: item.url,
     headline: item.headline,

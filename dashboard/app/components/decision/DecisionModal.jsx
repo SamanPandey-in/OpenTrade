@@ -109,6 +109,9 @@ export default function DecisionModal() {
   const [isApproving, setIsApproving] = useState(false);
   const [isExecuted, setIsExecuted] = useState(false);
   const [approvedRank, setApprovedRank] = useState(null);
+  const [executiveBrief, setExecutiveBrief] = useState(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [prediction, setPrediction] = useState(null);
   const approveRef = useRef(null);
   const modalRef = useRef(null);
 
@@ -166,6 +169,53 @@ export default function DecisionModal() {
   const traceId = activeResolution?.traceId || activeResolution?.id;
   const disruption = disruptions.find((d) => d.id === activeResolution?.disruptionId || d.traceId === activeResolution?.disruptionId);
 
+  // Generate a short executive brief when modal opens and options are present.
+  useEffect(() => {
+    if (!activeResolution || !activeResolution.options?.length) return;
+    const trace = activeResolution.traceId || activeResolution.id || 'no-trace';
+    const cacheKey = `exec_brief_${trace}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      setExecutiveBrief(cached);
+      return;
+    }
+
+    let aborted = false;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        setBriefLoading(true);
+        const res = await fetch('/api/generate-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disruption, options: activeResolution.options, impactReport: activeResolution.impactReport, brief: true }),
+          signal: controller.signal,
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (aborted) return;
+        if (res.ok && payload.report) {
+          // Keep it short: take first two sentences
+          const text = payload.report.replace(/\s+/g, ' ').trim();
+          const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+          const short = sentences.slice(0, 2).join(' ').trim();
+          setExecutiveBrief(short);
+          try { sessionStorage.setItem(cacheKey, short); } catch {}
+        }
+      } catch (err) {
+        // Non-fatal — leave executiveBrief null and continue
+        console.warn('[DecisionModal] Executive brief generation failed:', err?.message || err);
+      } finally {
+        if (!aborted) setBriefLoading(false);
+      }
+    })();
+
+    return () => {
+      aborted = true;
+      try { controller.abort(); } catch {}
+    };
+  }, [activeResolution, activeResolution?.options?.length, disruption]);
+
   async function handleApprove(rank) {
     if (isApproving || !traceId || approvedRank || isExecuted) return;
     setIsApproving(true);
@@ -177,6 +227,17 @@ export default function DecisionModal() {
       markResolutionExecuted(rank);
       setIsExecuted(true);
       toast.success(`Protocol ${rank} deployed successfully`);
+      // Fire-and-update: request predictive next-disruption banner (non-blocking)
+      (async () => {
+        try {
+          const headlines = activeResolution?.impactReport?.headlines || [];
+          const resp = await fetch('/api/predict-next', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ disruption, headlines }) });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok && data?.prediction) setPrediction(data.prediction);
+        } catch (e) {
+          console.warn('[DecisionModal] Predictive banner fetch failed', e?.message || e);
+        }
+      })();
       setTimeout(() => clearActiveDisruption(), 4500);
     } catch (err) {
       toast.error(`Operation failed: ${err.message}`);
@@ -244,6 +305,15 @@ export default function DecisionModal() {
             <div className="flex flex-col lg:grid lg:grid-cols-[1.4fr_0.6fr] gap-0 flex-1 overflow-hidden">
               {isExecuted ? (
                 <div className="col-span-2 flex flex-col items-center justify-center p-12 text-center space-y-6 bg-black/5">
+                  {prediction && (
+                    <div className="absolute top-6 left-1/2 -translate-x-1/2 max-w-3xl z-50">
+                      <div className="p-3 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-subtle)] shadow-lg flex items-center justify-between gap-4">
+                        <div className="text-sm text-[var(--text-primary)] font-bold">AI Prediction</div>
+                        <div className="text-sm text-[var(--text-secondary)]">{prediction}</div>
+                        <button onClick={() => setPrediction(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">Dismiss</button>
+                      </div>
+                    </div>
+                  )}
                   <div className="w-20 h-20 rounded-full bg-[var(--accent-green)]/10 flex items-center justify-center border border-[var(--accent-green)]/20 shadow-[0_0_40px_var(--accent-green)]/10">
                     <motion.div
                       initial={{ scale: 0 }}
@@ -278,19 +348,30 @@ export default function DecisionModal() {
               ) : (
                 <>
                   <div className="p-8 overflow-y-auto custom-scrollbar space-y-8 bg-black/5">
-                    <div className="flex flex-col md:flex-row gap-6">
-                      {activeResolution.options.map((option) => (
-                        <OptionCard 
-                          key={option.rank} 
-                          option={option} 
-                          onApprove={handleApprove} 
-                          isApproving={isApproving} 
-                          isSelected={approvedRank === option.rank} 
-                          shortcutKey={option.rank}
-                          maxCost={maxCostFound}
-                        />
-                      ))}
-                    </div>
+                      <div className="flex flex-col md:flex-row gap-6">
+                        {/* Executive brief (auto-generated) */}
+                        {briefLoading && (
+                          <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/40 text-sm text-[var(--text-muted)]">Generating executive brief...</div>
+                        )}
+                        {executiveBrief && (
+                          <div className="p-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-sm text-[var(--text-primary)] max-w-2xl">
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Executive Brief</div>
+                            <div className="leading-relaxed">{executiveBrief}</div>
+                          </div>
+                        )}
+
+                        {activeResolution.options.map((option) => (
+                          <OptionCard 
+                            key={option.rank} 
+                            option={option} 
+                            onApprove={handleApprove} 
+                            isApproving={isApproving} 
+                            isSelected={approvedRank === option.rank} 
+                            shortcutKey={option.rank}
+                            maxCost={maxCostFound}
+                          />
+                        ))}
+                      </div>
                     
                     {activeResolution.analysisText && (
                       <div className="p-5 rounded-2xl border border-[var(--accent-red)]/20 bg-[var(--accent-red)]/5 flex gap-4">

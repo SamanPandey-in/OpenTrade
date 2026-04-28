@@ -21,6 +21,8 @@ export default function AgentChatSidebar() {
   const activeDisruption = disruptions.find((d) => (d.id || d.traceId) === activeDisruptionId);
   const current = chains[0];
   const isStreaming = Boolean(current && !current.complete);
+  const [chatQuery, setChatQuery] = useState('');
+  const [chatSending, setChatSending] = useState(false);
 
   useEffect(() => {
     if (!traceId) {
@@ -70,6 +72,52 @@ export default function AgentChatSidebar() {
       bottomRef.current?.scrollIntoView && bottomRef.current.scrollIntoView();
     }
   }, [chains]);
+
+  async function sendChat(e) {
+    if (e) e.preventDefault();
+    const q = (chatQuery || '').trim();
+    if (!q) return;
+    if (!traceId && !activeDisruption) {
+      // attach minimal context if no active trace
+    }
+    setChatSending(true);
+    const chatId = `chat_${Date.now()}`;
+    setChains((p) => [{ traceId: chatId, text: '', complete: false }, ...p].slice(0, 8));
+
+    const systemParts = [];
+    if (activeResolution?.impactReport) systemParts.push(`ImpactReport: ${JSON.stringify(activeResolution.impactReport).slice(0, 2000)}`);
+    if (activeResolution) systemParts.push(`Resolution summary: ${activeResolution?.analysisText || activeResolution?.options?.map(o => o.title).join('; ')}`);
+    if (activeDisruption) systemParts.push(`Disruption: ${activeDisruption.headline || activeDisruption.description || activeDisruption.location}`);
+    const system = systemParts.join('\n');
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, system }),
+      });
+
+      if (!res.body) throw new Error('No streaming body from chat endpoint');
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        done = d;
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          setChains((p) => p.map((c) => (c.traceId === chatId ? { ...c, text: c.text + chunk } : c)));
+        }
+      }
+      setChains((p) => p.map((c) => (c.traceId === chatId ? { ...c, complete: true } : c)));
+      setChatQuery('');
+    } catch (err) {
+      console.warn('[AgentChat] Chat stream failed:', err?.message || err);
+      setChains((p) => p.map((c) => (c.traceId === chatId ? { ...c, complete: true } : c)));
+    } finally {
+      setChatSending(false);
+    }
+  }
 
   return (
     <div className="flex flex-col h-full w-full bg-transparent">
@@ -135,6 +183,21 @@ export default function AgentChatSidebar() {
         )}
         {isStreaming && <span className="inline-block w-2 h-4 bg-[var(--accent-cyan)] ml-1 animate-pulse rounded-sm align-middle" />}
         <div ref={bottomRef} />
+      </div>
+
+      {/* Chat input */}
+      <div className="px-4 py-3 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex-shrink-0">
+        <form onSubmit={sendChat} className="flex gap-2">
+          <input
+            value={chatQuery}
+            onChange={(e) => setChatQuery(e.target.value)}
+            placeholder={isStreaming ? 'Streaming active — ask a follow-up question...' : 'Ask the AI about this disruption (e.g. "why was option 2 chosen?")'}
+            className="flex-1 px-3 py-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-sm outline-none"
+          />
+          <button type="submit" disabled={chatSending} className="px-3 py-2 rounded-xl bg-[var(--accent-cyan)] text-black font-bold text-sm disabled:opacity-50">
+            {chatSending ? 'Sending...' : 'Ask'}
+          </button>
+        </form>
       </div>
 
       {chains.length > 1 && (

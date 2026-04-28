@@ -1,7 +1,8 @@
-'use client';
+ 'use client';
 
 import { Check, Loader2, ShieldAlert } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { useEffect, useState } from 'react';
 import CostTimeChart from './CostTimeChart.jsx';
 import FeedbackThumb from './FeedbackThumb.jsx';
 
@@ -37,6 +38,11 @@ const CFG = {
 export default function OptionCard({ option, onApprove, isApproving, isSelected, shortcutKey, maxCost = 10000 }) {
   const c = CFG[option.rank] || CFG[3];
   const relativeCost = Math.min((Math.abs(option.costDelta || 0) / maxCost) * 100, 100);
+  const baseTonnes = Number(option.cargoTonnes || 1000);
+  const [cargoTonnes, setCargoTonnes] = useState(baseTonnes);
+  const scale = cargoTonnes / Math.max(1, baseTonnes);
+  const displayedCostDelta = Math.round(Number(option.costDelta || 0) * scale);
+  const displayedCarbonKg = Math.round(Number(option.carbonDeltaKg || 0) * scale);
 
   return (
     <motion.div 
@@ -58,9 +64,11 @@ export default function OptionCard({ option, onApprove, isApproving, isSelected,
         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${c.badge}`}>
           {c.label}
         </span>
-        <span className="text-[10px] text-[var(--text-muted)] font-mono font-bold tracking-tight">
-          {Math.round((option.confidence || 0) * 100)}% RELIABILITY
-        </span>
+
+        <div className="flex items-center gap-3">
+          <ConfidenceGauge confidence={option.confidence || 0} accent={c.accent} />
+          <span className="text-[10px] text-[var(--text-muted)] font-mono font-bold tracking-tight">Reliability</span>
+        </div>
       </div>
 
       <div className="space-y-1 relative z-10">
@@ -91,19 +99,39 @@ export default function OptionCard({ option, onApprove, isApproving, isSelected,
       </div>
 
       {/* Relative Cost Indicator */}
-      <div className="space-y-1.5 relative z-10">
+      <div className="space-y-1 relative z-10">
         <div className="flex justify-between text-[9px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
           <span>Cost Magnitude</span>
-          <span>{formatMoney(option.costDelta)}</span>
+          <span>{formatMoney(displayedCostDelta)}</span>
         </div>
         <div className="h-1.5 w-full bg-[var(--bg-elevated)] rounded-full overflow-hidden border border-[var(--border-subtle)]">
           <motion.div 
             initial={{ width: 0 }}
-            animate={{ width: `${relativeCost}%` }}
+            animate={{ width: `${Math.min(100, (Math.abs(displayedCostDelta) / maxCost) * 100)}%` }}
             transition={{ duration: 1, delay: 0.5 }}
             className="h-full rounded-full"
             style={{ backgroundColor: c.accent }}
           />
+        </div>
+      </div>
+
+      {/* What-if slider for cargo tonnes */}
+      <div className="mt-3 relative z-10">
+        <div className="flex items-center justify-between text-[9px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1">
+          <span>What-If Cargo (tonnes)</span>
+          <span className="text-[11px] font-mono">{cargoTonnes}t</span>
+        </div>
+        <input
+          type="range"
+          min={Math.max(1, Math.round(baseTonnes * 0.2))}
+          max={Math.max(10, Math.round(baseTonnes * 5))}
+          value={cargoTonnes}
+          onChange={(e) => setCargoTonnes(Number(e.target.value))}
+          className="w-full"
+        />
+        <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)] mt-2">
+          <div>Carbon: {formatCarbon(displayedCarbonKg)}</div>
+          <div className="font-mono">Δ Cost: {formatMoney(displayedCostDelta)}</div>
         </div>
       </div>
 
@@ -138,3 +166,63 @@ export default function OptionCard({ option, onApprove, isApproving, isSelected,
     </motion.div>
   );
 }
+
+  function ConfidenceGauge({ confidence = 0, accent = 'var(--accent-cyan)' }) {
+    const [display, setDisplay] = useState(0);
+
+    useEffect(() => {
+      let rafId = null;
+      const duration = 700;
+      const start = performance.now();
+      const from = 0;
+      const to = Math.round((confidence || 0) * 100);
+
+      function step(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const value = Math.round(from + (to - from) * t);
+        setDisplay(value);
+        if (t < 1) rafId = requestAnimationFrame(step);
+      }
+
+      rafId = requestAnimationFrame(step);
+      return () => { if (rafId) cancelAnimationFrame(rafId); };
+    }, [confidence]);
+
+    // Respect reduced motion preference
+    if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return (
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-full bg-[var(--bg-elevated)]/40 flex items-center justify-center text-xs font-bold">{Math.round((confidence || 0) * 100)}%</div>
+        </div>
+      );
+    }
+
+    const size = 28;
+    const stroke = 3;
+    const radius = (size - stroke) / 2;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference * (1 - (confidence || 0));
+
+    return (
+      <div className="flex items-center gap-2">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          <circle cx={size/2} cy={size/2} r={radius} stroke="rgba(255,255,255,0.06)" strokeWidth={stroke} fill="none" />
+          <motion.circle
+            cx={size/2}
+            cy={size/2}
+            r={radius}
+            stroke={accent}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            fill="none"
+            initial={{ strokeDashoffset: circumference }}
+            animate={{ strokeDashoffset: offset }}
+            transition={{ duration: 0.8, ease: 'easeOut' }}
+            style={{ rotate: -90, transformOrigin: '50% 50%' , strokeWidth: stroke }}
+            strokeDasharray={circumference}
+          />
+        </svg>
+        <div className="text-[11px] font-bold text-[var(--text-primary)]">{display}%</div>
+      </div>
+    );
+  }
