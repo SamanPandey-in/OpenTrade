@@ -51,7 +51,7 @@ export default async function executeRoute(app) {
 
 		const { data: allOptions } = await supabase
 			.from('resolution_options')
-			.select('rank,title,summary,reasoning,cost_delta_usd,time_delta_days,co2_delta_kg')
+			.select('rank,title,description,cost_delta,time_delta,confidence')
 			.eq('resolution_id', traceId)
 			.order('rank', { ascending: true });
 

@@ -406,7 +406,7 @@ async function processImpactReport(agentPayload) {
 	try {
 		const modelResult = await generateWithRetry(prompt, SYSTEM_PROMPT, {
 			maxRetries: 2,
-			invokeModel: (retryPrompt) => generate(retryPrompt),
+			invokeModel: (retryPrompt, { systemPrompt }) => generate(retryPrompt),
 		});
 		parsedOptions = modelResult.parsed;
 		modelOutput = modelResult.raw;

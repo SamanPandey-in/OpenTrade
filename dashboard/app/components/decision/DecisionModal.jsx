@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
-import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
 import { X, ShieldAlert, Cpu, ShieldCheck, FileText } from 'lucide-react';
 import { useAlertStore } from '../../store/alertStore.js';
 import { db, isFirebaseConfigured } from '../../lib/firebase.js';
